@@ -120,9 +120,9 @@ def dtw(distance_matrix, gully, penalty):
     # Score is the final score of the best path
     score = float(distance_matrix[i, j])
 
-    x_indices = np.zeros(distance_matrix.shape[0], dtype=np.int)
+    x_indices = np.zeros(sum(distance_matrix.shape), dtype=np.int)
     x_indices[0] = i
-    y_indices = np.zeros(distance_matrix.shape[1], dtype=np.int)
+    y_indices = np.zeros(sum(distance_matrix.shape), dtype=np.int)
     y_indices[0] = j
     x_indices, y_indices = path_from_traceback(traceback, x_indices, y_indices)
 
