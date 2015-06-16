@@ -39,45 +39,6 @@ def dtw_core(dist_matrix, add_pen, traceback):
                 dist_matrix[i + 1, j + 1] += dist_matrix[i + 1, j] + add_pen
 
 
-@numba.jit(nopython=True)
-def path_from_traceback(traceback, x_indices, y_indices):
-    """Extracts the index path from the traceback matrix.
-
-    Parameters
-    ----------
-    traceback : np.ndarray
-        Traceback matrix.  Each entry should be 0, 1, or 2, where 1 corresponds
-        to a diagonal move, 1 corresponds to a horizontal move, and 2
-        corresponds to a vertical move.
-    x_indices : np.ndarray
-        First dimension path indices; x_indices[0] should be provided with the
-        end of the path.  Will be modified by this function.
-    y_indices : np.ndarray
-        Same as x_indices for second dimension.
-    """
-    i = x_indices[0]
-    j = y_indices[0]
-    n = 1
-
-    # Until we reach an edge
-    while i > 0 and j > 0:
-        # If the tracback matrix indicates a diagonal move...
-        if traceback[i, j] == 0:
-            i = i - 1
-            j = j - 1
-        # Horizontal move...
-        elif traceback[i, j] == 1:
-            i = i - 1
-        # Vertical move...
-        elif traceback[i, j] == 2:
-            j = j - 1
-        # Add these indices into the path arrays
-        x_indices[n] = i
-        y_indices[n] = j
-        n += 1
-    return x_indices[:n], y_indices[:n]
-
-
 def dtw(distance_matrix, gully, penalty):
     """ Compute the dynamic time warping distance between two sequences given a
     distance matrix.  The score is normalized by the path length.
@@ -120,10 +81,33 @@ def dtw(distance_matrix, gully, penalty):
     # Score is the final score of the best path
     score = float(distance_matrix[i, j])
 
-    x_indices = np.zeros(sum(distance_matrix.shape), dtype=np.int)
+    # Pre-allocate the x and y path index arrays
+    x_indices = np.zeros(sum(traceback.shape), dtype=np.int)
+    y_indices = np.zeros(sum(traceback.shape), dtype=np.int)
+    # Start the arrays from the end of the path
     x_indices[0] = i
-    y_indices = np.zeros(sum(distance_matrix.shape), dtype=np.int)
     y_indices[0] = j
-    x_indices, y_indices = path_from_traceback(traceback, x_indices, y_indices)
+    # Keep track of path length
+    n = 1
 
-    return x_indices[::-1], y_indices[::-1], score
+    # Until we reach an edge
+    while i > 0 and j > 0:
+        # If the tracback matrix indicates a diagonal move...
+        if traceback[i, j] == 0:
+            i = i - 1
+            j = j - 1
+        # Horizontal move...
+        elif traceback[i, j] == 1:
+            i = i - 1
+        # Vertical move...
+        elif traceback[i, j] == 2:
+            j = j - 1
+        # Add these indices into the path arrays
+        x_indices[n] = i
+        y_indices[n] = j
+        n += 1
+    # Reverse and crop the path index arrays
+    x_indices = x_indices[:n][::-1]
+    y_indices = y_indices[:n][::-1]
+
+    return x_indices, y_indices, score
