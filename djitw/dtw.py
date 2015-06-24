@@ -65,7 +65,7 @@ def dtw(distance_matrix, gully, penalty):
         penalties.
     """
     # Pre-allocate path length matrix
-    traceback = np.empty(distance_matrix.shape, distance_matrix.dtype)
+    traceback = np.empty(distance_matrix.shape, np.uint8)
     # Populate distance matrix with lowest cost path
     dtw_core(distance_matrix, penalty, traceback)
     # Traceback from lowest-cost point on bottom or right edge
