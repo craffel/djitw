@@ -64,6 +64,8 @@ def dtw(distance_matrix, gully, penalty):
         DTW score of lowest cost path through the distance matrix, including
         penalties.
     """
+    if np.isnan(distance_matrix).any():
+        raise ValueError('NaN values found in distance matrix.')
     # Pre-allocate path length matrix
     traceback = np.empty(distance_matrix.shape, np.uint8)
     # Populate distance matrix with lowest cost path
