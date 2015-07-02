@@ -41,7 +41,7 @@ def dtw_core(dist_matrix, add_pen, traceback):
 
 def dtw(distance_matrix, gully, penalty):
     """ Compute the dynamic time warping distance between two sequences given a
-    distance matrix.  The score is normalized by the path length.
+    distance matrix.  The score is unnormalized.
 
     Parameters
     ----------
