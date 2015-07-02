@@ -156,7 +156,7 @@ def dtw_core_masked(dist_matrix, add_pen, traceback, mask):
                     dist_matrix[i + 1, j + 1] += dist_matrix[i + 1, j] + add_pen
 
 
-def dtw(distance_matrix, gully, penalty, mask=None):
+def dtw(distance_matrix, gully, penalty, mask=None, inplace=True):
     """ Compute the dynamic time warping distance between two sequences given a
     distance matrix.  The score is unnormalized.
 
@@ -173,6 +173,10 @@ def dtw(distance_matrix, gully, penalty, mask=None):
         should be allowed in the DTW path and ``mask[i, j] == 0`` otherwise.
         If None (default), don't apply a mask - this is more efficient than
         providing a mask of all 1s.
+    inplace : bool
+        When ``inplace == True`` (default), `distance_matrix` will be modified
+        in-place when computing path costs.  When ``inplace == False``,
+        `distance_matrix` will not be modified.
 
     Returns
     -------
@@ -188,6 +192,8 @@ def dtw(distance_matrix, gully, penalty, mask=None):
     """
     if np.isnan(distance_matrix).any():
         raise ValueError('NaN values found in distance matrix.')
+    if not inplace:
+        distance_matrix = distance_matrix.copy()
     # Pre-allocate path length matrix
     traceback = np.empty(distance_matrix.shape, np.uint8)
     # Don't use masked DTW routine if no mask was provided
