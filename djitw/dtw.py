@@ -70,7 +70,7 @@ def band_mask(radius, mask):
 
 
 @numba.jit(nopython=True)
-def dtw_core(dist_mat, add_pen, traceback):
+def dtw_core(dist_mat, add_pen, mul_pen, traceback):
     """Core dynamic programming routine for DTW.
 
     `dist_mat` and `traceback` will be modified in-place.
@@ -81,6 +81,8 @@ def dtw_core(dist_mat, add_pen, traceback):
         Distance matrix to update with lowest-cost path to each entry.
     add_pen : int or float
         Additive penalty for non-diagonal moves.
+    mul_pen : int or float
+        Multiplicative penalty for non-diagonal moves.
     traceback : np.ndarray
         Matrix to populate with the lowest-cost traceback from each entry.
     """
@@ -89,24 +91,24 @@ def dtw_core(dist_mat, add_pen, traceback):
     for i in xrange(dist_mat.shape[0] - 1):
         for j in xrange(dist_mat.shape[1] - 1):
             # Diagonal move (which has no penalty) is lowest
-            if dist_mat[i, j] <= dist_mat[i, j + 1] + add_pen and \
-               dist_mat[i, j] <= dist_mat[i + 1, j] + add_pen:
+            if dist_mat[i, j] <= mul_pen*dist_mat[i, j + 1] + add_pen and \
+               dist_mat[i, j] <= mul_pen*dist_mat[i + 1, j] + add_pen:
                 traceback[i + 1, j + 1] = 0
                 dist_mat[i + 1, j + 1] += dist_mat[i, j]
             # Horizontal move (has penalty)
             elif (dist_mat[i, j + 1] <= dist_mat[i + 1, j] and
-                  dist_mat[i, j + 1] + add_pen <= dist_mat[i, j]):
+                  mul_pen*dist_mat[i, j + 1] + add_pen <= dist_mat[i, j]):
                 traceback[i + 1, j + 1] = 1
-                dist_mat[i + 1, j + 1] += dist_mat[i, j + 1] + add_pen
+                dist_mat[i + 1, j + 1] += mul_pen*dist_mat[i, j + 1] + add_pen
             # Vertical move (has penalty)
             elif (dist_mat[i + 1, j] <= dist_mat[i, j + 1] and
-                  dist_mat[i + 1, j] + add_pen <= dist_mat[i, j]):
+                  mul_pen*dist_mat[i + 1, j] + add_pen <= dist_mat[i, j]):
                 traceback[i + 1, j + 1] = 2
-                dist_mat[i + 1, j + 1] += dist_mat[i + 1, j] + add_pen
+                dist_mat[i + 1, j + 1] += mul_pen*dist_mat[i + 1, j] + add_pen
 
 
 @numba.jit(nopython=True)
-def dtw_core_masked(dist_mat, add_pen, traceback, mask):
+def dtw_core_masked(dist_mat, add_pen, mul_pen, traceback, mask):
     """Core dynamic programming routine for DTW, with an index mask, so that
     the possible paths are constrained.
 
@@ -118,6 +120,8 @@ def dtw_core_masked(dist_mat, add_pen, traceback, mask):
         Distance matrix to update with lowest-cost path to each entry.
     add_pen : int or float
         Additive penalty for non-diagonal moves.
+    mul_pen : int or float
+        Multiplicative penalty for non-diagonal moves.
     traceback : np.ndarray
         Matrix to populate with the lowest-cost traceback from each entry.
     mask : np.ndarray
@@ -134,29 +138,32 @@ def dtw_core_masked(dist_mat, add_pen, traceback, mask):
             else:
                 # Diagonal move (which has no penalty) is lowest, or is the
                 # only valid move
-                if ((dist_mat[i, j] <= dist_mat[i, j + 1] + add_pen
+                if ((dist_mat[i, j] <= mul_pen*dist_mat[i, j + 1] + add_pen
                      or not mask[i, j + 1]) and
-                    (dist_mat[i, j] <= dist_mat[i + 1, j] + add_pen
+                    (dist_mat[i, j] <= mul_pen*dist_mat[i + 1, j] + add_pen
                      or not mask[i + 1, j])):
                     traceback[i + 1, j + 1] = 0
                     dist_mat[i + 1, j + 1] += dist_mat[i, j]
                 # Horizontal move (has penalty)
                 elif ((dist_mat[i, j + 1] <= dist_mat[i + 1, j]
                        or not mask[i + 1, j]) and
-                      (dist_mat[i, j + 1] + add_pen <= dist_mat[i, j]
+                      (mul_pen*dist_mat[i, j + 1] + add_pen <= dist_mat[i, j]
                        or not mask[i, j])):
                     traceback[i + 1, j + 1] = 1
-                    dist_mat[i + 1, j + 1] += dist_mat[i, j + 1] + add_pen
+                    dist_mat[i + 1, j + 1] += (mul_pen*dist_mat[i, j + 1] +
+                                               add_pen)
                 # Vertical move (has penalty)
                 elif ((dist_mat[i + 1, j] <= dist_mat[i, j + 1]
                        or not mask[i, j + 1]) and
-                      (dist_mat[i + 1, j] + add_pen <= dist_mat[i, j]
+                      (mul_pen*dist_mat[i + 1, j] + add_pen <= dist_mat[i, j]
                        or not mask[i, j])):
                     traceback[i + 1, j + 1] = 2
-                    dist_mat[i + 1, j + 1] += dist_mat[i + 1, j] + add_pen
+                    dist_mat[i + 1, j + 1] += (mul_pen*dist_mat[i + 1, j] +
+                                               add_pen)
 
 
-def dtw(distance_matrix, gully, penalty, mask=None, inplace=True):
+def dtw(distance_matrix, gully, additive_penalty=0., multiplicative_penalty=1.,
+        mask=None, inplace=True):
     """ Compute the dynamic time warping distance between two sequences given a
     distance matrix.  The score is unnormalized.
 
@@ -166,8 +173,11 @@ def dtw(distance_matrix, gully, penalty, mask=None, inplace=True):
         Distances between two sequences.
     gully : float
         Sequences must match up to this porportion of shorter sequence.
-    penalty : int
-        Non-diagonal move penalty.
+    additive_penalty : int or float
+        Additive penalty for non-diagonal moves. Default 0. means no penalty.
+    multiplicative_penalty : int or float
+        Multiplicative penalty for non-diagonal moves. Default 1. means no
+        penalty.
     mask : np.ndarray
         A boolean matrix, such that ``mask[i, j] == 1`` when the index ``i, j``
         should be allowed in the DTW path and ``mask[i, j] == 0`` otherwise.
@@ -199,9 +209,11 @@ def dtw(distance_matrix, gully, penalty, mask=None, inplace=True):
     # Don't use masked DTW routine if no mask was provided
     if mask is None:
         # Populate distance matrix with lowest cost path
-        dtw_core(distance_matrix, penalty, traceback)
+        dtw_core(distance_matrix, additive_penalty, multiplicative_penalty,
+                 traceback)
     else:
-        dtw_core_masked(distance_matrix, penalty, traceback, mask)
+        dtw_core_masked(distance_matrix, additive_penalty,
+                        multiplicative_penalty, traceback, mask)
     # Traceback from lowest-cost point on bottom or right edge
     gully = int(gully*min(distance_matrix.shape[0], distance_matrix.shape[1]))
     i = np.argmin(distance_matrix[gully:, -1]) + gully
