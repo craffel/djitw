@@ -4,6 +4,72 @@ import numpy as np
 
 
 @numba.jit(nopython=True)
+def band_mask(radius, mask):
+    """Construct band-around-diagonal mask (Sakoe-Chiba band).  When
+    ``mask.shape[0] != mask.shape[1]``, the radius will be expanded so that
+    ``mask[-1, -1] = 1`` always.
+
+    `mask` will be modified in place.
+
+    Parameters
+    ----------
+    radius : float
+        The band radius (1/2 of the width) will be
+        ``int(radius*min(mask.shape))``.
+    mask : np.ndarray
+        Pre-allocated boolean matrix of zeros.
+
+    Examples
+    --------
+    >>> mask = np.zeros((8, 8), dtype=np.bool)
+    >>> band_mask(.75, mask)
+    >>> mask.astype(int)
+    array([[1, 1, 0, 0, 0, 0, 0, 0],
+           [1, 1, 1, 0, 0, 0, 0, 0],
+           [0, 1, 1, 1, 0, 0, 0, 0],
+           [0, 0, 1, 1, 1, 0, 0, 0],
+           [0, 0, 0, 1, 1, 1, 0, 0],
+           [0, 0, 0, 0, 1, 1, 1, 0],
+           [0, 0, 0, 0, 0, 1, 1, 1],
+           [0, 0, 0, 0, 0, 0, 1, 1]])
+    >>> mask = np.zeros((8, 12), dtype=np.bool)
+    >>> band_mask(.75, mask)
+    >>> mask.astype(int)
+    array([[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+           [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+           [0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+           [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
+           [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+           [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0],
+           [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+           [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]])
+    """
+    nx, ny = mask.shape
+    # The logic will be different depending on whether there are more rows
+    # or columns in the mask.  Coding it this way results in some code
+    # duplication but it's the most efficient way with numba
+    if nx < ny:
+        # Calculate the radius in indices, rather than proportion
+        radius = int(round(nx*radius))
+        # Force radius to be at least one
+        radius = 1 if radius == 0 else radius
+        for i in xrange(nx):
+            for j in xrange(ny):
+                # If this i, j falls within the band
+                if i - j + (nx - radius) < nx and j - i + (nx - radius) < ny:
+                    # Set the mask to 1 here
+                    mask[i, j] = 1
+    # Same exact approach with ny/ny and i/j switched.
+    else:
+        radius = int(round(ny*radius))
+        radius = 1 if radius == 0 else radius
+        for i in range(nx):
+            for j in range(ny):
+                if j - i + (ny - radius) < ny and i - j + (ny - radius) < nx:
+                    mask[i, j] = 1
+
+
+@numba.jit(nopython=True)
 def dtw_core(dist_matrix, add_pen, traceback):
     """Core dynamic programming routine for DTW.
 
@@ -39,7 +105,58 @@ def dtw_core(dist_matrix, add_pen, traceback):
                 dist_matrix[i + 1, j + 1] += dist_matrix[i + 1, j] + add_pen
 
 
-def dtw(distance_matrix, gully, penalty):
+@numba.jit(nopython=True)
+def dtw_core_masked(dist_matrix, add_pen, traceback, mask):
+    """Core dynamic programming routine for DTW, with an index mask, so that
+    the possible paths are constrained.
+
+    `dist_matrix` and `traceback` will be modified in-place.
+
+    Parameters
+    ----------
+    dist_matrix : np.ndarray
+        Distance matrix to update with lowest-cost path to each entry.
+    add_pen : int or float
+        Additive penalty for non-diagonal moves.
+    traceback : np.ndarray
+        Matrix to populate with the lowest-cost traceback from each entry.
+    mask : np.ndarray
+        A boolean matrix, such that ``mask[i, j] == 1`` when the index ``i, j``
+        should be allowed in the DTW path and ``mask[i, j] == 0`` otherwise.
+    """
+    # At each loop iteration, we are computing lowest cost to D[i + 1, j + 1]
+    # TOOD: Would probably be faster if xrange(1, dist_matrix.shape[0])
+    for i in xrange(dist_matrix.shape[0] - 1):
+        for j in xrange(dist_matrix.shape[1] - 1):
+            # If this point is not reachable, set the cost to infinity
+            if not mask[i, j] and not mask[i, j + 1] and not mask[i + 1, j]:
+                dist_matrix[i + 1, j + 1] = np.inf
+            else:
+                # Diagonal move (which has no penalty) is lowest, or is the
+                # only valid move
+                if ((dist_matrix[i, j] <= dist_matrix[i, j + 1] + add_pen
+                     or not mask[i, j + 1]) and
+                    (dist_matrix[i, j] <= dist_matrix[i + 1, j] + add_pen
+                     or not mask[i + 1, j])):
+                    traceback[i + 1, j + 1] = 0
+                    dist_matrix[i + 1, j + 1] += dist_matrix[i, j]
+                # Horizontal move (has penalty)
+                elif ((dist_matrix[i, j + 1] <= dist_matrix[i + 1, j]
+                       or not mask[i + 1, j]) and
+                      (dist_matrix[i, j + 1] + add_pen <= dist_matrix[i, j]
+                       or not mask[i, j])):
+                    traceback[i + 1, j + 1] = 1
+                    dist_matrix[i + 1, j + 1] += dist_matrix[i, j + 1] + add_pen
+                # Vertical move (has penalty)
+                elif ((dist_matrix[i + 1, j] <= dist_matrix[i, j + 1]
+                       or not mask[i, j + 1]) and
+                      (dist_matrix[i + 1, j] + add_pen <= dist_matrix[i, j]
+                       or not mask[i, j])):
+                    traceback[i + 1, j + 1] = 2
+                    dist_matrix[i + 1, j + 1] += dist_matrix[i + 1, j] + add_pen
+
+
+def dtw(distance_matrix, gully, penalty, mask=None):
     """ Compute the dynamic time warping distance between two sequences given a
     distance matrix.  The score is unnormalized.
 
@@ -51,6 +168,11 @@ def dtw(distance_matrix, gully, penalty):
         Sequences must match up to this porportion of shorter sequence.
     penalty : int
         Non-diagonal move penalty.
+    mask : np.ndarray
+        A boolean matrix, such that ``mask[i, j] == 1`` when the index ``i, j``
+        should be allowed in the DTW path and ``mask[i, j] == 0`` otherwise.
+        If None (default), don't apply a mask - this is more efficient than
+        providing a mask of all 1s.
 
     Returns
     -------
@@ -68,8 +190,12 @@ def dtw(distance_matrix, gully, penalty):
         raise ValueError('NaN values found in distance matrix.')
     # Pre-allocate path length matrix
     traceback = np.empty(distance_matrix.shape, np.uint8)
-    # Populate distance matrix with lowest cost path
-    dtw_core(distance_matrix, penalty, traceback)
+    # Don't use masked DTW routine if no mask was provided
+    if mask is None:
+        # Populate distance matrix with lowest cost path
+        dtw_core(distance_matrix, penalty, traceback)
+    else:
+        dtw_core_masked(distance_matrix, penalty, traceback, mask)
     # Traceback from lowest-cost point on bottom or right edge
     gully = int(gully*min(distance_matrix.shape[0], distance_matrix.shape[1]))
     i = np.argmin(distance_matrix[gully:, -1]) + gully
