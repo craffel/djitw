@@ -162,8 +162,8 @@ def dtw_core_masked(dist_mat, add_pen, mul_pen, traceback, mask):
                                                add_pen)
 
 
-def dtw(distance_matrix, gully, additive_penalty=0., multiplicative_penalty=1.,
-        mask=None, inplace=True):
+def dtw(distance_matrix, gully=1., additive_penalty=0.,
+        multiplicative_penalty=1., mask=None, inplace=True):
     """ Compute the dynamic time warping distance between two sequences given a
     distance matrix.  The score is unnormalized.
 
@@ -172,7 +172,9 @@ def dtw(distance_matrix, gully, additive_penalty=0., multiplicative_penalty=1.,
     distance_matrix : np.ndarray
         Distances between two sequences.
     gully : float
-        Sequences must match up to this porportion of shorter sequence.
+        Sequences must match up to this porportion of shorter sequence. Default
+        1., which means the entirety of the shorter sequence must be matched
+        to part of the longer sequence.
     additive_penalty : int or float
         Additive penalty for non-diagonal moves. Default 0. means no penalty.
     multiplicative_penalty : int or float
@@ -214,11 +216,19 @@ def dtw(distance_matrix, gully, additive_penalty=0., multiplicative_penalty=1.,
     else:
         dtw_core_masked(distance_matrix, additive_penalty,
                         multiplicative_penalty, traceback, mask)
-    # Traceback from lowest-cost point on bottom or right edge
-    gully = int(gully*min(distance_matrix.shape[0], distance_matrix.shape[1]))
+    if gully < 1.:
+        # Allow the end of the path to start within gully percentage of the
+        # smaller distance matrix dimension
+        gully = int(gully*min(distance_matrix.shape))
+    else:
+        # When gully is 1 require matching the entirety of the smaller sequence
+        gully = min(distance_matrix.shape) - 1
+
+    # Find the indices of the smallest costs on the bottom and right edges
     i = np.argmin(distance_matrix[gully:, -1]) + gully
     j = np.argmin(distance_matrix[-1, gully:]) + gully
 
+    # Choose the smaller cost on the two edges
     if distance_matrix[-1, j] > distance_matrix[i, -1]:
         j = distance_matrix.shape[1] - 1
     else:
