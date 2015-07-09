@@ -1,6 +1,7 @@
 """ Fast DTW routines. """
 import numba
 import numpy as np
+import parakeet
 
 
 @numba.jit(nopython=True)
@@ -162,15 +163,152 @@ def dtw_core_masked(dist_mat, add_pen, mul_pen, traceback, mask):
                                                add_pen)
 
 
-def dtw(distance_matrix, gully=1., additive_penalty=0.,
-        multiplicative_penalty=1., mask=None, inplace=True):
+def sqeuclidean(x, y):
+    """Compute the squared euclidean distance between two vectors.
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+        Vectors to compute the distance between
+
+    Returns
+    -------
+    distance : float
+        Squared Euclidean distance between the vectors.
+    """
+    return np.sum((x - y)**2)
+
+
+def euclidean(x, y):
+    """Compute the euclidean distance between two vectors.
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+        Vectors to compute the distance between
+
+    Returns
+    -------
+    distance : float
+        Euclidean distance between the vectors.
+    """
+    return np.sqrt(sqeuclidean(x, y))
+
+
+def cosine(x, y):
+    """Compute the cosine distance between two vectors.
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+        Vectors to compute the distance between
+
+    Returns
+    -------
+    distance : float
+        Cosine distance between the vectors.
+    """
+    return 1. - np.dot(x, y)/(np.sqrt(np.sum(x**2))*np.sqrt(np.sum(y**2)))
+
+
+@parakeet.jit
+def dtw_core_no_mat(x, y, dist_func, add_pen, mul_pen):
+    """Core DTW routine where the distance matrix is calculated on-the-go,
+    which avoids allocating it but is about 1/2 as fast.
+
+    Parameters
+    ----------
+    x, y: np.ndarray
+        Sequences between which the best-cost path will be found.
+    dist_func : callable
+        Local distance function to use.
+    add_pen : int or float
+        Additive penalty for non-diagonal moves.
+    mul_pen : int or float
+        Multiplicative penalty for non-diagonal moves.
+
+    Returns
+    -------
+    last_row, last_col : np.ndarray
+        The final row and column of the populated DTW cost matrix
+    traceback : np.ndarray
+        Path traceback matrix
+    """
+    # Pre-allocate row and column vectors, which will be used in lieu of a full
+    # distance matrix.  These are the only rows/columns we need to keep track
+    # of in the course of computing the DTW path.
+    curr_row = np.empty(y.shape[0])
+    prev_row = np.empty(y.shape[0])
+    last_col = np.empty(x.shape[0])
+    # Pre-allocate the traceback matrix.
+    traceback = np.empty((x.shape[0], y.shape[0]), dtype=np.uint8)
+    for j in xrange(y.shape[0]):
+        # Pre-compute the distances for the first row
+        curr_row[j] = dist_func(x[0], y[j])
+        # Set the first row of traceback to 0, otherwise it will never be set
+        # and the values from np.empty will persist
+        traceback[0, j] = 0
+    # Store the topmost entry of the last column
+    last_col[0] = curr_row[-1]
+    # For each row...
+    for i in xrange(x.shape[0] - 1):
+        # Set the first value of traceback for this row to 0, as above
+        traceback[i + 1, 0] = 0
+        # The "previous" row should be set to what used to be, on the last loop
+        # iteration, the "current" row.  For now, the only value that matters
+        # is the first value, the rest of the values will be populated below.
+        prev_row[0] = curr_row[0]
+        # Calculate the local distance for the first entry in this current row.
+        # As above, only the first value matters now, the rest will be
+        # populated below.
+        curr_row[0] = dist_func(x[i + 1], y[0])
+        # For each entry in the row...
+        for j in xrange(y.shape[0] - 1):
+            # Store the previously current value for this row entry as the
+            # previous value.  We will be computing curr_row[j + 1] here.
+            prev_row[j + 1] = curr_row[j + 1]
+            # prev_row[j] being smallest corresponds to a diagonal move, which
+            # has no penalty
+            if prev_row[j] <= mul_pen*prev_row[j + 1] + add_pen and \
+               prev_row[j] <= mul_pen*curr_row[j] + add_pen:
+                traceback[i + 1, j + 1] = 0
+                # Accumulate cost from the diagonally-above cell, and the cost
+                # of this distance calculation
+                curr_row[j + 1] = prev_row[j] + dist_func(x[i + 1], y[j + 1])
+            # Vertical move, as above
+            elif (prev_row[j + 1] <= curr_row[j] and
+                  mul_pen*prev_row[j + 1] + add_pen <= prev_row[j]):
+                traceback[i + 1, j + 1] = 1
+                curr_row[j + 1] = (mul_pen*prev_row[j + 1] + add_pen
+                                   + dist_func(x[i + 1], y[j + 1]))
+            # Horizontal move
+            elif (curr_row[j] <= prev_row[j + 1] and
+                  mul_pen*curr_row[j] + add_pen <= prev_row[j]):
+                traceback[i + 1, j + 1] = 2
+                curr_row[j + 1] = (mul_pen*curr_row[j] + add_pen
+                                   + dist_func(x[i + 1], y[j + 1]))
+        # Store the last entry of this row in last_col, which we'll need later
+        last_col[i + 1] = curr_row[-1]
+    # We can just return curr_row as last_row
+    return curr_row, last_col, traceback
+
+
+def dtw(distance_matrix=None, x=None, y=None, distance_function=None, gully=1.,
+        additive_penalty=0., multiplicative_penalty=1., mask=None,
+        inplace=True):
     """ Compute the dynamic time warping distance between two sequences given a
     distance matrix.  The score is unnormalized.
 
     Parameters
     ----------
     distance_matrix : np.ndarray
-        Distances between two sequences.
+        Distances between two sequences.  If None, `x`, `y`, and
+        `distance_function` will be used.
+    x, y: np.ndarray
+        Sequences between which the best-cost path will be found.  If None,
+        `distance_matrix` will be used.
+    distance_function : callable
+        Local distance function to use, when `distance_matrix` is not provided.
     gully : float
         Sequences must match up to this porportion of shorter sequence. Default
         1., which means the entirety of the shorter sequence must be matched
@@ -188,7 +326,8 @@ def dtw(distance_matrix, gully=1., additive_penalty=0.,
     inplace : bool
         When ``inplace == True`` (default), `distance_matrix` will be modified
         in-place when computing path costs.  When ``inplace == False``,
-        `distance_matrix` will not be modified.
+        `distance_matrix` will not be modified.  Ignored when `x`, `y`, and
+        `distance_function` are provided.
 
     Returns
     -------
@@ -202,40 +341,55 @@ def dtw(distance_matrix, gully=1., additive_penalty=0.,
         DTW score of lowest cost path through the distance matrix, including
         penalties.
     """
-    if np.isnan(distance_matrix).any():
-        raise ValueError('NaN values found in distance matrix.')
-    if not inplace:
-        distance_matrix = distance_matrix.copy()
-    # Pre-allocate path length matrix
-    traceback = np.empty(distance_matrix.shape, np.uint8)
-    # Don't use masked DTW routine if no mask was provided
-    if mask is None:
-        # Populate distance matrix with lowest cost path
-        dtw_core(distance_matrix, additive_penalty, multiplicative_penalty,
-                 traceback)
+    if distance_matrix is None:
+        if x is None or y is None or distance_function is None:
+            raise ValueError("Either distance_matrix or x, y, and "
+                             "distance_function must be supplied.")
+        if mask is not None:
+            raise ValueError("Masking is not (currently) supported when "
+                             "computing the distance matrix on-the-fly.")
+        last_row, last_column, traceback = dtw_core_no_mat(
+            x, y, distance_function, additive_penalty, multiplicative_penalty)
+        nx = x.shape[0]
+        ny = y.shape[0]
     else:
-        dtw_core_masked(distance_matrix, additive_penalty,
-                        multiplicative_penalty, traceback, mask)
+        if np.isnan(distance_matrix).any():
+            raise ValueError('NaN values found in distance matrix.')
+        if not inplace:
+            distance_matrix = distance_matrix.copy()
+        # Pre-allocate traceback matrix
+        traceback = np.empty(distance_matrix.shape, np.uint8)
+        # Don't use masked DTW routine if no mask was provided
+        if mask is None:
+            # Populate distance matrix with lowest cost path
+            dtw_core(distance_matrix, additive_penalty, multiplicative_penalty,
+                     traceback)
+        else:
+            dtw_core_masked(distance_matrix, additive_penalty,
+                            multiplicative_penalty, traceback, mask)
+        nx, ny = distance_matrix.shape
+        last_row = distance_matrix[-1, :]
+        last_column = distance_matrix[:, -1]
+
     if gully < 1.:
         # Allow the end of the path to start within gully percentage of the
         # smaller distance matrix dimension
-        gully = int(gully*min(distance_matrix.shape))
+        gully = int(gully*min(nx, ny))
     else:
         # When gully is 1 require matching the entirety of the smaller sequence
-        gully = min(distance_matrix.shape) - 1
+        gully = min(nx, ny) - 1
 
     # Find the indices of the smallest costs on the bottom and right edges
-    i = np.argmin(distance_matrix[gully:, -1]) + gully
-    j = np.argmin(distance_matrix[-1, gully:]) + gully
+    i = np.argmin(last_column[gully:]) + gully
+    j = np.argmin(last_row[gully:]) + gully
 
     # Choose the smaller cost on the two edges
-    if distance_matrix[-1, j] > distance_matrix[i, -1]:
-        j = distance_matrix.shape[1] - 1
+    if last_row[j] > last_column[i]:
+        j = ny - 1
+        score = float(last_column[i])
     else:
-        i = distance_matrix.shape[0] - 1
-
-    # Score is the final score of the best path
-    score = float(distance_matrix[i, j])
+        i = nx - 1
+        score = float(last_row[j])
 
     # Pre-allocate the x and y path index arrays
     x_indices = np.zeros(sum(traceback.shape), dtype=np.int)
