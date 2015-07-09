@@ -23,7 +23,7 @@ def band_mask(radius, mask):
     Examples
     --------
     >>> mask = np.zeros((8, 8), dtype=np.bool)
-    >>> band_mask(.75, mask)
+    >>> band_mask(.25, mask)
     >>> mask.astype(int)
     array([[1, 1, 0, 0, 0, 0, 0, 0],
            [1, 1, 1, 0, 0, 0, 0, 0],
@@ -34,7 +34,7 @@ def band_mask(radius, mask):
            [0, 0, 0, 0, 0, 1, 1, 1],
            [0, 0, 0, 0, 0, 0, 1, 1]])
     >>> mask = np.zeros((8, 12), dtype=np.bool)
-    >>> band_mask(.75, mask)
+    >>> band_mask(.25, mask)
     >>> mask.astype(int)
     array([[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
            [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
